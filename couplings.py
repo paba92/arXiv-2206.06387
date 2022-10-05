@@ -1,3 +1,10 @@
+"""
+Module used to compute the coupling matrix of a MAGIC-based ion trap QIP for a given axial trap potential.
+"""
+
+import warnings
+import itertools
+from typing import Union
 
 import numpy as np
 from numpy import linalg
@@ -5,41 +12,62 @@ from scipy.optimize import root
 
 import matplotlib.pyplot as plt
 
-import warnings
-import itertools
 
+# === ABSTRACT CLASSES FOR POTENTIALS ===
 
-class TotalPotential1D:
+class GlobalPotential1D:
     """A potential acting on `n` particles that live in one-dimensional space."""
 
-    def __init__(self, n, **config):
+    def __init__(self, n: int, **config):
+        """
+        n - number of particles
+
+        Subclasses should accept arbitrary keyword arguments, of which they may use some to initialize their objects.
+        """
         self._n = n
 
     @property
     def n(self):
+        """Number of particles."""
         return self._n
 
     def potential(self, z):
-        raise NotImplementedError()
+        """Value of the potential at positions `z`."""
+        raise NotImplementedError()  # abstract method
 
-    def dk_tensor(self, z, k):
-        raise NotImplementedError()
+    def dk_tensor(self, z, k: int):
+        """Value of the `k`-th order derivative tensor at positions `z`."""
+        # One could give a default implementation in terms of `self.potential()` that computes
+        # numerical derivatives, but we usually have better means.
+        raise NotImplementedError()  # abstract method
 
     def gradient(self, z):
-        return self.dk_tensor(z, 1)
+        """Convenience function for the first-order derivative."""
+        return self.dk_tensor(z, 1)  # default implementation
 
     def hessian(self, z):
-        return self.dk_tensor(z, 2)
+        """Convenience function for the second-order derivative."""
+        return self.dk_tensor(z, 2)  # default implementation
 
 
 class LocalPotential1D:
     """A potential acting on a single particle that lives in one-dimensional space."""
 
-    def potential(self, z):
-        raise NotImplementedError()
+    def __init__(self, **config):
+        """
+        Subclasses should accept arbitrary keyword arguments, of which they may use some to initialize their objects.
+        """
+        pass
 
-    def derivative(self, z, order=1):
+    def potential(self, z):
+        """Value of the potential at position `z`."""
+        raise NotImplementedError()  # abstract method
+
+    def derivative(self, z, order: int = 1):
+        """The one-dimensional derivative of order `order` at position `z`."""
         if order > 0:
+            # Default implementation uses numerical differentiation.
+            # Should be overwritten if derivatives are known algebraically.
             from scipy.misc import derivative
             return derivative(self.potential, z, n=order)
         elif order == 0:
@@ -48,52 +76,75 @@ class LocalPotential1D:
             raise ValueError(f"`order` must be a non-negative integer, not: {order}")
 
 
-class TotalFromLocal(TotalPotential1D):
-    """The total potential on `n` particles caused by a given local potential on each individual particle."""
+class GlobalFromLocal(GlobalPotential1D):
+    """
+    The total potential on `n` particles caused by a local potential
+    that acts independently on each individual particle.
+    """
 
     def __init__(self, n: int, local: LocalPotential1D, **config):
         super().__init__(n, **config)
         self._local = local  # local potential
 
     def potential(self, z):
+        """
+        Value of the global potential at positions `z`, which is the sum of the
+        local potential values at the different particle positions `z[i]`.
+        """
         return sum(self._local.potential(z[i]) for i in range(self._n))
 
-    def dk_tensor(self, z, k):
+    def dk_tensor(self, z, k: int):
+        """
+        Value of the `k`-th order derivative tensor at positions `z`.
+
+        Entries are only non-zero if all indices are identical, in which case the entry is simply
+        the corresponding `k`-th derivative of the local potential.
+        """
         return np.fromiter(map(lambda idx: (self._local.derivative(z[idx[0]], k) if (len(set(idx)) == 1) else 0),
                                itertools.product(range(self._n), repeat=k)),
                            np.float_, self._n**k).reshape(k*(self._n,))
 
-    def gradient(self, z):
-        # return np.fromfunction(lambda i: self._local.derivative(1, z[i]),
-        #                        (self._n,), dtype=np.int)
-        return self.dk_tensor(z, 1)
 
-    def hessian(self, z):
-        # return np.fromfunction(lambda i, j: (self._local.derivative(2, z[i]) if i == j else 0),
-        #                        (self._n, self._n), dtype=np.int)
-        return self.dk_tensor(z, 2)
+# === CONCRETE POTENTIALS ===
 
+class PairwiseCoulomb1D(GlobalPotential1D):
+    """
+    The mutual Coulomb potential of `n` identical charged particles in one spatial dimension.
 
-class PairwiseCoulomb1D(TotalPotential1D):
-    """The mutual Coulomb potential of `n` particles in one spatial dimension."""
+    By default, assumes that particles have unit charge (q = 1) and units are such that the constant e^2/(4*pi*eps_0)
+    has value 1 (e2_4pieps0 = 1), but alternative values can be passed via keyword to the constructor.
+    """
 
-    def __init__(self, n: int, q=1, e2_4pieps0=1, **config):
+    def __init__(self, n: int, **config):
         super().__init__(n, **config)
-        self._q2_4pieps0 = q**2 * e2_4pieps0  # q^2/(4*pi*eps0)
+        q = config.get('q', 1)
+        e2_4pieps0 = config.get('e2_4pieps0', 1)
+        self._q2_4pieps0 = q*q * e2_4pieps0  # (q*e)^2/(4*\pi*\eps_0)
 
     @staticmethod
-    def _potential_raw_function(n, z):
+    def _potential_raw_function(n: int, z):
+        """Sum of inverse distances; no prefactors yet."""
         return sum(1 / abs(z[i] - z[j]) for i in range(n) for j in range(i))
 
     @staticmethod
-    def _gradient_raw_function(n, z):
+    def _gradient_raw_function(n: int, z):
+        """
+        Exact gradient of ._potential_raw_function().
+
+        Returns a function that maps gradient indices to corresponding gradient entries.
+        """
         def gradient_entry(i):
             return (sum(1 / (z[i] - z[j]) ** 2 for j in range(i+1, n))
                     - sum(1 / (z[i] - z[j]) ** 2 for j in range(i)))
         return gradient_entry
 
     @staticmethod
-    def _hessian_raw_function(n, z):
+    def _hessian_raw_function(n: int, z):
+        """
+        Exact Hessian of ._potential_raw_function().
+
+        Returns a function that maps Hessian index pairs to corresponding Hessian entries.
+        """
         def hessian_entry(ij):
             i, j = ij
             if i == j:
@@ -103,7 +154,15 @@ class PairwiseCoulomb1D(TotalPotential1D):
         return hessian_entry
 
     @staticmethod
-    def _d3_tensor_raw_function(n, z):
+    def _d3_tensor_raw_function(n: int, z):
+        """
+        Exact third derivative tensor of ._potential_raw_function().
+
+        Returns a function that maps index triples to corresponding tensor entries.
+
+        This is not required for a standard leading order MAGIC analysis,
+        but can be handy in higher-order analyses.
+        """
         def d3_two_sites(i, k):
             if i > k:
                 return 1 / (z[i] - z[k]) ** 4
@@ -125,23 +184,20 @@ class PairwiseCoulomb1D(TotalPotential1D):
         return d3_tensor_entry
 
     def potential(self, z):
+        """Pairwise Coulomb potential at particle positions `z`."""
         return self._q2_4pieps0 * self._potential_raw_function(self._n, z)
 
     def gradient(self, z):
-        # return self._q2_4pieps0 * np.fromfunction(self._gradient_raw_function(self._n, z),
-        #                                           (self._n,), dtype=np.int)
         return self._q2_4pieps0 * np.fromiter(map(self._gradient_raw_function(self._n, z),
                                                   range(self._n)),
                                               np.float_, self._n)
 
     def hessian(self, z):
-        # return 2*self._q2_4pieps0 * np.fromfunction(self._hessian_raw_function(self._n, z),
-        #                                             (self._n, self._n), dtype=np.int)
         return 2*self._q2_4pieps0 * np.fromiter(map(self._hessian_raw_function(self._n, z),
                                                     itertools.product(range(self._n), repeat=2)),
                                                 np.float_, self._n**2).reshape(2*(self._n,))
 
-    def dk_tensor(self, z, k):
+    def dk_tensor(self, z, k: int):
         if k == 0:
             return self.potential(z)
         elif k == 1:
@@ -149,49 +205,79 @@ class PairwiseCoulomb1D(TotalPotential1D):
         elif k == 2:
             return self.hessian(z)
         elif k == 3:
-            # return 6*self._q2_4pieps0 * np.fromfunction(self._d3_tensor_raw_function(self._n, z),
-            #                                             (self._n, self._n, self._n), dtype=np.int)
             return 6*self._q2_4pieps0 * np.fromiter(map(self._d3_tensor_raw_function(self._n, z),
                                                         itertools.product(range(self._n), repeat=3)),
                                                     np.float_, self._n**3).reshape(3*(self._n,))
         else:
+            # Higher derivatives could be computed numerically, but are unlikely to be needed.
             raise NotImplementedError()
 
 
 class Quadratic1D(LocalPotential1D):
-    """A simple parabolic potential."""
+    """
+    A simple parabolic potential of the form 1/2*a*z^2.
 
-    def __init__(self, mw2=1, **config):
-        self._mw2 = mw2  # m*\omega^2
+    By default, assumes that units are such that the constant in the potential has value 1.
+    Alternative values can be passed to the constructor via keyword `mw2` (alluding to the harmonic oscillator value).
+    """
+
+    def __init__(self, **config):
+        super().__init__(**config)
+        self._mw2 = config.get('mw2', 1)  # m*\omega^2
 
     def potential(self, z):
         return (self._mw2 * z**2) / 2
 
-    def derivative(self, z, order=1):
-        if order < 1:
-            return super().derivative(z, order)
+    def derivative(self, z, order: int = 1):
+        if order == 0:
+            return self.potential(z)
         elif order == 1:
             return self._mw2 * z
         elif order == 2:
             return self._mw2
+        elif order < 0:
+            raise ValueError("Derivative order has to be non-negative")
         else:
+            # all derivatives beyond the second vanish identically
             return 0
 
 
-def get_equilibrium_positions(n, external, init=None, tries=5):
-    if isinstance(n, PairwiseCoulomb1D):
-        coulomb = n
-        n = coulomb.n
+# === FUNCTIONS TOWARDS THE MAGIC COUPLING ===
+
+def get_equilibrium_positions(n: Union[int, GlobalPotential1D],
+                              external: Union[LocalPotential1D, GlobalPotential1D],
+                              init=None, tries: int = 5):
+    """
+    Compute the equilibrium configuration of a crystal consisting of `n` ions (by numerical optimization).
+
+    A typical use case for this function may look like this:
+      z0 = get_equilibrium_positions(8, Quadratic1D())
+
+    n        - The number of ions. The internal potential of the crystal is by default the corresponding
+                 `PairwiseCoulomb1D`. Alternatively, some other `GlobalPotential1D` can be given explicitly.
+    external - The axial trap potential, given as a `LocalPotential1D`. If the ions do not feel the same external
+                 potential, some other `GlobalPotential1D` can be given explicitly.
+    init     - Optional. Initialization for the numerical optimizer.
+    tries    - Optional, default: 5. Number of attempts to numerically find an optimum.
+                 Retries are conducted with randomly varied initial conditions.
+
+    If no optimum is found after `tries` tries, a RuntimeError is raised.
+    """
+
+    if isinstance(n, GlobalPotential1D):
+        internal = n
+        n = internal.n
     else:
-        coulomb = PairwiseCoulomb1D(n)
+        internal = PairwiseCoulomb1D(n)
+
     if isinstance(external, LocalPotential1D):
-        external = TotalFromLocal(n, external)
+        external = GlobalFromLocal(n, external)
 
     def total_gradient(z):
-        return external.gradient(z) + coulomb.gradient(z)
+        return external.gradient(z) + internal.gradient(z)
 
     def total_hessian(z):
-        return external.hessian(z) + coulomb.hessian(z)
+        return external.hessian(z) + internal.hessian(z)
 
     # TODO: use non-linear spacing
     if init is None:
@@ -217,7 +303,7 @@ def normal_mode_matrix(n, external, init=None, tries=5):
     else:
         coulomb = PairwiseCoulomb1D(n)
     if isinstance(external, LocalPotential1D):
-        external = TotalFromLocal(n, external)
+        external = GlobalFromLocal(n, external)
 
     def total_hessian(zs):
         return coulomb.hessian(zs) + external.hessian(zs)
