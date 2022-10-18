@@ -10,7 +10,7 @@ def default_h_layout(n: int) -> np.ndarray:
     # Prepare default Hadamard layout (Eq. 31)
     t_h = np.eye(n, dtype=np.uint8)
     t_h[0, 0] = 0
-    t_h[1:, 0] = np.ones((n-1, 1), dtype=np.uint8)
+    t_h[1:, 0] = np.ones(n-1, dtype=np.uint8)
     return t_h
 
 
@@ -110,7 +110,7 @@ def create_random_directed_cx(n: int):
 
 
 def to_qiskit(n: int, t_h, seq):
-    assert t_h.shape[1] == len(seq) + 1  # TODO: Does that always hold?
+    assert t_h.shape[1] == len(seq) + 1  # TODO: Can this fail? When?
     qc = QuantumCircuit(n)
     for h_lay, cz_lay in zip(t_h.T, seq):
         for i in np.flatnonzero(h_lay):
@@ -118,7 +118,10 @@ def to_qiskit(n: int, t_h, seq):
         qc.barrier()
         for fanout in cz_lay.T:
             idcs = np.flatnonzero(fanout)
-            ctrl = idcs[0]
+            try:
+                ctrl = idcs[0]
+            except IndexError:
+                continue  # skips empty layers. should only ever happen when called from `to_qiskit_prealg()`
             for trgt in idcs[1:]:
                 qc.cz(ctrl, trgt)
         qc.barrier()
@@ -127,25 +130,31 @@ def to_qiskit(n: int, t_h, seq):
     return qc
 
 
+def to_qiskit_prealg(n: int, t_cz):
+    t_h = default_h_layout(n)
+    seq = list(lay.reshape((n, 1)) for lay in t_cz.T)[:-1]
+    return to_qiskit(n, t_h, seq)
+
+
 if __name__ == '__main__':
-    n = 6
+    n = 5
 
     t_cz = create_random_directed_cx(n)
-    print("Random directed CX layer layout:")
-    print(t_cz)
+    # print("Random directed CX layer layout:")
+    # print(t_cz)
+    print(to_qiskit_prealg(n, t_cz))
 
     t_h = algorithm_1(n, t_cz)
-    print("Corresponding modified H pattern (post-Alg1):")
-    print(t_h)
-    print()
+    # print("Corresponding modified H pattern (post-Alg1):")
+    # print(t_h)
+    # print()
 
     red_t_h, seq = algorithm_2(n, t_h, t_cz)
-    print("Reduced H pattern after GCZ formation (post-Alg2):")
-    print(red_t_h)
-    print("Diagonal gate sequence:")
-    for i, lay in enumerate(seq):
-        print(f"-> layer {i}:")
-        print(lay)
+    # print("Reduced H pattern after GCZ formation (post-Alg2):")
+    # print(red_t_h)
+    # print("Diagonal gate sequence:")
+    # for i, lay in enumerate(seq):
+    #     print(f"-> layer {i}:")
+    #     print(lay)
 
-    qc = to_qiskit(n, red_t_h, seq)
-    print(qc)
+    print(to_qiskit(n, red_t_h, seq))
