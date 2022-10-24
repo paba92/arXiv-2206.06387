@@ -1,3 +1,8 @@
+"""
+Transformation algorithms to reduce the number and complexity of GZZ gates needed to implement directed CX layers.
+
+Essentially an implementation of Algorithms 1 & 2 of the paper.
+"""
 
 from typing import Union
 
@@ -11,6 +16,7 @@ from qiskit import QuantumCircuit
 # ===========================
 
 def _b_to_t_cz(n: int, b: np.ndarray) -> np.ndarray:
+    """Transform the lower triangular matrix B of some GCX(B) to T_CZ as described below Eq. 30."""
     # Check input shape
     assert b.shape == (n, n)
     # Copy relevant lower triangle from input
@@ -26,6 +32,7 @@ def _b_to_t_cz(n: int, b: np.ndarray) -> np.ndarray:
 
 
 def _h_cols_to_t_h(n: int, h_cols: list[int]) -> np.ndarray:
+    """Transform a list of H positions on qubits 1, ..., n-1 to T_H as described below Eq. 30."""
     # Create empty array
     t_h = np.zeros((n, n), dtype=np.uint8)
     # Populate by going through `n-1` list entries (`im1` meaning `i-1`)
@@ -39,6 +46,7 @@ def _h_cols_to_t_h(n: int, h_cols: list[int]) -> np.ndarray:
 
 
 def _fanouts_to_gcz(n: int, fanouts: list[np.ndarray]) -> np.ndarray:
+    """Transform a list of fan-out gates (columns of T_CZ) to the A of some GCZ(A)."""
     a = np.zeros((n, n), dtype=np.uint8)
     for fanout in fanouts:
         try:
@@ -54,6 +62,7 @@ def _fanouts_to_gcz(n: int, fanouts: list[np.ndarray]) -> np.ndarray:
 # =======================
 
 def _algorithm_1_core(n: int, t_cz: np.ndarray) -> list[int]:
+    """Core functionality of Algorithm 1. Should be called via public `algorithm_1()`."""
     # Assume T_H in default initial layout (as created by `default_h_layout(n)` below)
     # T_H does not have to be stored as a matrix, we can just store the position the H in each row has been moved to
     h_cols = []
@@ -85,6 +94,7 @@ def _algorithm_1_core(n: int, t_cz: np.ndarray) -> list[int]:
 
 
 def _algorithm_2_core(n: int, t_h: np.ndarray, t_cz: np.ndarray) -> tuple[np.ndarray, list[list[np.ndarray]]]:
+    """Core functionality of Algorithm 2. Should be called via public `algorithm_2()`."""
     sequence = []
     current_gcz = []
     for j in range(n-1):
@@ -114,7 +124,7 @@ def _algorithm_2_core(n: int, t_h: np.ndarray, t_cz: np.ndarray) -> tuple[np.nda
                 sequence[-1].append(t_cz[:, j])
     # Compress objects
     t_h = np.delete(t_h, np.argwhere(np.all(t_h[..., :] == 0, axis=0)), axis=1)  # truncate H pattern
-    pass  # TODO: Compress sequence
+    pass  # TODO: Compress sequence (remove empty GCZ collections)
     # Return results
     return t_h, sequence
 
@@ -124,6 +134,18 @@ def _algorithm_2_core(n: int, t_h: np.ndarray, t_cz: np.ndarray) -> tuple[np.nda
 # =================================
 
 def algorithm_1(n: int, t_cz: np.ndarray, return_raw_list: bool = False) -> Union[np.ndarray, list[int]]:
+    """
+    Implementation of Algorithm 1 (Moving Hadamard gates).
+
+    This method does not need T_H as an input, but instead assumes the default layout shown in Eq. 30.
+
+    ARGUMENTS:
+        n: int - Number of qubits.
+        t_cz: ndarray - Configuration of CZ gates. Determines the mobility of H gates.
+    OPTIONAL ARGUMENTS:
+        return_raw_list: bool - Default: False. Whether to proxy the internal result of the core function or
+                                                convert the result to the format described in the paper.
+    """
     # Run core algorithm
     h_cols = _algorithm_1_core(n, t_cz)
     # Handle sophisticated return
@@ -137,6 +159,17 @@ def algorithm_1(n: int, t_cz: np.ndarray, return_raw_list: bool = False) -> Unio
 
 def algorithm_2(n: int, t_h: np.ndarray, t_cz: np.ndarray, return_raw_list: bool = False) \
         -> tuple[np.ndarray, Union[list[np.ndarray], list[list[np.ndarray]]]]:
+    """
+    Implementation of Algorithm 2 (Moving CZ gates).
+
+    ARGUMENTS:
+        n: int - Number of qubits.
+        t_h: ndarray - Configuration of H gates. Determines the mobility of CZ gates.
+        t_cz: ndarray - Configuration of CZ gates.
+    OPTIONAL ARGUMENTS:
+        return_raw_list: bool - Default: False. Whether to proxy the internal result of the core function or
+                                                convert the result to the format described in the paper.
+    """
     # Run core algorithm
     t_h, sequence = _algorithm_2_core(n, t_h, t_cz)
     # Handle sophisticated return
@@ -147,6 +180,18 @@ def algorithm_2(n: int, t_h: np.ndarray, t_cz: np.ndarray, return_raw_list: bool
 
 
 def directed_cx_to_t_h_and_gcz_seq(n: int, b: np.ndarray) -> tuple[np.ndarray, list[np.ndarray]]:
+    """
+    An end-to-end concatenation of Algorithms 1 & 2.
+
+    Turns the matrix B specifying some directed CX layer GCX(B) into a sequence of GCZ gates with Hadamards inbetween.
+
+    ARGUMENTS:
+        n: int - Number of qubits.
+        b: ndarray - Input matrix B specifying some directed CX layer GCX(B).
+    RETURNS:
+        T_H, a matrix holding the positions of Hadamard gates.
+        [A, ...], a list with the matrices A specifying layers of GCZ(A) gates.
+    """
     t_cz = _b_to_t_cz(n, b)
     return algorithm_2(n, algorithm_1(n, t_cz), t_cz)
 
