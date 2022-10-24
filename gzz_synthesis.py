@@ -1,6 +1,15 @@
+"""
+Solvers for the gate synthesis problem.
+
+Numerically solves the problems Eq. 9 (linear program, LP) and Eq. 18 (mixed integer program, MIP) of the paper.
+The two important methods are `lp_approach(n, m)` and `mip_approach(n, m)`, each to be called with a qubit number `n`
+and a symmetric matrix w/o diagonal `m` that represents the target gate unitary (after divison by the coupling matrix).
+Note that the corresponding solvers (GLPK for the LP, MOSEK for the MIP) have to be installed.
+"""
+
+from typing import Union
 
 import itertools as it
-from typing import Union
 
 import numpy as np
 import cvxpy as cp
@@ -10,11 +19,12 @@ import cvxpy as cp
 # === UTILITY CACHES ===
 # ======================
 
-tril_indices = {}
-outer_prods = {}
+tril_indices = {}  # cache for index pairs in the lower triangle of an nxn matrix
+outer_prods = {}  # cache for the matrices of the linear equation system (columns are vectorized outer products)
 
 
 def get_tril_indices(n: int, *, save_in_cache: bool = True) -> tuple[np.ndarray, np.ndarray]:
+    """Computes the indices of the lower triangle of an nxn matrix, or retrieves them from cache."""
     try:
         return tril_indices[n]
     except KeyError:
@@ -25,6 +35,7 @@ def get_tril_indices(n: int, *, save_in_cache: bool = True) -> tuple[np.ndarray,
 
 
 def get_outer_prods(n: int, *, save_in_cache: bool = True) -> np.ndarray:
+    """Computes the LP matrix for n qubits, or retrieves it from cache."""
     try:
         return outer_prods[n]
     except KeyError:
@@ -42,6 +53,20 @@ def get_outer_prods(n: int, *, save_in_cache: bool = True) -> np.ndarray:
 
 def lp_approach(n: int, m: np.ndarray, *, save_in_cache: bool = True, threshold: Union[float, None] = 1e-12) \
         -> np.ndarray:
+    """
+    Compute the encoding times to implement a GZZ gate by solving the LP of Eq. 9 using GLPK.
+
+    ARGUMENTS:
+        n: int - Number of qubits.
+        m: ndarray - Data specifying the target gate. Either a symmetric matrix with zero diagonal
+                                                      or a vectorized lower triangle of the former.
+    OPTIONAL KEYWORD-ONLY ARGUMENTS:
+        save_in_cache: bool - Whether to save newly computed helper data in module-level cache for later usage.
+        threshold: float, default = 1e-12 - Threshold to truncate tiny entries in the result produced by floating-point
+                                            arithmetic. `None` means no truncation.
+    RETURNS:
+        ndarray of 2^(n-1) encoding times (cf. symmetry argument below Eq. 9)
+    """
     # check input:
     if m.shape == (n, n):  # input is square matrix...
         y = m[get_tril_indices(n, save_in_cache=save_in_cache)]  # ... and lower triangle is extracted
@@ -66,6 +91,24 @@ def lp_approach(n: int, m: np.ndarray, *, save_in_cache: bool = True, threshold:
 
 def mip_approach(n: int, m: np.ndarray, alpha: float, c_l: float, c_u_scaling: float, rel_opt_tol: float,
                  *, save_in_cache: bool = True, threshold: Union[float, None] = 1e-12) -> np.ndarray:
+    """
+    Compute the encoding times to implement a GZZ gate by solving the MIP of Eq. 18 using MOSEK.
+
+    ARGUMENTS:
+        n: int - Number of qubits.
+        m: ndarray - Data specifying the target gate. Either a symmetric matrix with zero diagonal
+                                                      or a vectorized lower triangle of the former.
+        alpha: float - Weighting parameter between total time and sparsity in the objective function (between 0 and 1).
+        c_l: float - Lower threshold for non-zero encoding times.
+        c_u_scaling: float - Proporionality constant for the adaptive upper bound of the non-zero encoding times.
+        rel_opt_tol: float - Relative optimality tolerance employed by the mixed-integer optimizer.
+    OPTIONAL KEYWORD-ONLY ARGUMENTS:
+        save_in_cache: bool - Whether to save newly computed helper data in module-level cache for later usage.
+        threshold: float, default = 1e-12 - Threshold to truncate tiny entries in the result produced by floating-point
+                                            arithmetic. `None` means no truncation.
+    RETURNS:
+        ndarray of 2^(n-1) encoding times (cf. symmetry argument below Eq. 9)
+    """
     # check input:
     if m.shape == (n, n):  # input is square matrix...
         y = m[get_tril_indices(n, save_in_cache=save_in_cache)]  # ... and lower triangle is extracted
@@ -96,3 +139,26 @@ def mip_approach(n: int, m: np.ndarray, alpha: float, c_l: float, c_u_scaling: f
         solution[solution < threshold] = 0.0
     # return result
     return solution
+
+
+# =================
+# === UTILITIES ===
+# =================
+
+def create_random_binary_m(n: int) -> np.ndarray:
+    tril = np.tril(np.random.randint(0, 2, (n, n), np.uint8), -1)
+    return tril + tril.T
+
+
+# =====================
+# === USAGE EXAMPLE ===
+# =====================
+
+if __name__ == '__main__':
+    for n in range(5, 9):
+        print(f"=== EXAMPLE ON {n} QUBITS ===")
+        m = create_random_binary_m(n)
+        print("Symmetric matrix with zero diagonal:")
+        print(m)
+        print("GZZ encoding times, found by solving an LP:")
+        print(lp_approach(n, m))
