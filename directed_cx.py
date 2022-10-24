@@ -6,11 +6,54 @@ import numpy as np
 from qiskit import QuantumCircuit
 
 
+# ===========================
+# === CONVERSION ROUTINES ===
+# ===========================
+
+def _b_to_t_cz(n: int, b: np.ndarray) -> np.ndarray:
+    # Check input shape
+    assert b.shape == (n, n)
+    # Copy relevant lower triangle from input
+    t_cz = np.tril(b, -1)
+    # Put control on diagonal, if at least one target is present in column
+    for j in range(n-1):
+        if sum(t_cz[j+1:, j]):
+            t_cz[j, j] = 1
+    # Set trivial `1` to follow paper convention
+    t_cz[-1, -1] = 1
+    # Return result
+    return t_cz
+
+
+def _h_cols_to_t_h(n: int, h_cols: list[int]) -> np.ndarray:
+    # Create empty array
+    t_h = np.zeros((n, n), dtype=np.uint8)
+    # Populate by going through `n-1` list entries (`im1` meaning `i-1`)
+    for im1, j in enumerate(h_cols):
+        if j == 0:
+            pass  # Cancellation has taken place, remains an all-zero row
+        else:
+            t_h[im1+1, [0, j]] = 1, 1  # Place H in the first and j-th row
+    # Return result
+    return t_h
+
+
+def _fanouts_to_gcz(n: int, fanouts: list[np.ndarray]) -> np.ndarray:
+    a = np.zeros((n, n), dtype=np.uint8)
+    for fanout in fanouts:
+        try:
+            ctrl = np.flatnonzero(fanout)[0]
+            a[ctrl+1:, ctrl] = fanout[ctrl+1:]
+        except IndexError:
+            continue  # Ignore empty objects
+    return a + a.T
+
+
 # =======================
-# === MAIN ALGORITHMS ===
+# === CORE ALGORITHMS ===
 # =======================
 
-def algorithm_1(n: int, t_cz: np.ndarray, return_raw_list: bool = False) -> Union[np.ndarray, list[int]]:
+def _algorithm_1_core(n: int, t_cz: np.ndarray) -> list[int]:
     # Assume T_H in default initial layout (as created by `default_h_layout(n)` below)
     # T_H does not have to be stored as a matrix, we can just store the position the H in each row has been moved to
     h_cols = []
@@ -37,37 +80,11 @@ def algorithm_1(n: int, t_cz: np.ndarray, return_raw_list: bool = False) -> Unio
         else:
             h_max = max(h_max, c)  # Find the more restrictive condition (either CZ on current qubit or H on previous)
             h_cols.append(h_max)  # Move H to the target layer
-    # --- RETURN ---
-    if return_raw_list:
-        # Directly return the list constructed by the loop above
-        return h_cols
-    else:
-        # Build T_H as in the paper
-        t_h = np.zeros((n, n), dtype=np.uint8)
-        for im1, j in enumerate(h_cols):
-            if j == 0:
-                pass  # Cancellation has taken place, remains an all-zero row
-            else:
-                t_h[im1+1, [0, j]] = 1, 1  # Place H in the first and j-th row
-        return t_h
+    # Return raw list
+    return h_cols
 
 
-def _fanouts_to_gcz(n: int, fanouts: list[np.ndarray]) -> np.ndarray:
-    a = np.zeros((n, n), dtype=np.uint8)
-    for fanout in fanouts:
-        try:
-            ctrl = np.flatnonzero(fanout)[0]
-            a[ctrl+1:, ctrl] = fanout[ctrl+1:]
-        except IndexError:
-            continue  # Ignore empty objects
-    return a + a.T
-
-
-def algorithm_2(n: int, t_h: np.ndarray, t_cz: np.ndarray, return_raw_list: bool = False) \
-        -> tuple[np.ndarray, Union[list[np.ndarray], list[list[np.ndarray]]]]:
-    ## Algorithm 2
-    #
-    # Generate the CZ/GCZ
+def _algorithm_2_core(n: int, t_h: np.ndarray, t_cz: np.ndarray) -> tuple[np.ndarray, list[list[np.ndarray]]]:
     sequence = []
     current_gcz = []
     for j in range(n-1):
@@ -98,14 +115,40 @@ def algorithm_2(n: int, t_h: np.ndarray, t_cz: np.ndarray, return_raw_list: bool
     # Compress objects
     t_h = np.delete(t_h, np.argwhere(np.all(t_h[..., :] == 0, axis=0)), axis=1)  # truncate H pattern
     pass  # TODO: Compress sequence
-    # --- RETURN ---
-    if not return_raw_list:
-        sequence = [_fanouts_to_gcz(n, fanouts) for fanouts in sequence]
+    # Return results
     return t_h, sequence
 
 
-# def directed_cx_to_h_gcz(n: int, b: np.ndarray) -> list[list[Union[int, tuple[int, int]]]]:
-#     pass
+# =================================
+# === PUBLIC ALGORITHM ROUTINES ===
+# =================================
+
+def algorithm_1(n: int, t_cz: np.ndarray, return_raw_list: bool = False) -> Union[np.ndarray, list[int]]:
+    # Run core algorithm
+    h_cols = _algorithm_1_core(n, t_cz)
+    # Handle sophisticated return
+    if return_raw_list:
+        # Directly return the list constructed by the loop above
+        return h_cols
+    else:
+        # Build T_H as in the paper
+        return _h_cols_to_t_h(n, h_cols)
+
+
+def algorithm_2(n: int, t_h: np.ndarray, t_cz: np.ndarray, return_raw_list: bool = False) \
+        -> tuple[np.ndarray, Union[list[np.ndarray], list[list[np.ndarray]]]]:
+    # Run core algorithm
+    t_h, sequence = _algorithm_2_core(n, t_h, t_cz)
+    # Handle sophisticated return
+    if return_raw_list:
+        return t_h, sequence
+    else:
+        return t_h, [_fanouts_to_gcz(n, fanouts) for fanouts in sequence]
+
+
+def directed_cx_to_t_h_and_gcz_seq(n: int, b: np.ndarray) -> tuple[np.ndarray, list[np.ndarray]]:
+    t_cz = _b_to_t_cz(n, b)
+    return algorithm_2(n, algorithm_1(n, t_cz), t_cz)
 
 
 # =================
@@ -113,23 +156,24 @@ def algorithm_2(n: int, t_h: np.ndarray, t_cz: np.ndarray, return_raw_list: bool
 # =================
 
 def create_random_directed_cx(n: int):
-    t_cz = np.tril(np.random.randint(0, 2, (n, n), np.uint8), -1)  # populate strictly lower triangle at random
-    for j in range(n-1):
-        if sum(t_cz[j+1:, j]):
-            t_cz[j, j] = 1  # set control on diagonal, if any target has been randomly selected in that column
-    return t_cz
+    # Create and return random binary strictly lower triangular matrix
+    return np.tril(np.random.randint(0, 2, (n, n), np.uint8), -1)
 
 
 def default_h_layout(n: int) -> np.ndarray:
     # Prepare default Hadamard layout (Eq. 31)
-    t_h = np.eye(n, dtype=np.uint8)
-    t_h[0, 0] = 0
-    t_h[1:, 0] = np.ones(n-1, dtype=np.uint8)
-    return t_h
+    return _h_cols_to_t_h(n, range(1, n))
+    # Equivalent to:
+    #   t_h = np.eye(n, dtype=np.uint8)
+    #   t_h[0, 0] = 0
+    #   t_h[1:, 0] = np.ones(n-1, dtype=np.uint8)
+    #   return t_h
 
 
-def trivial_conversion(n: int, t_cz: np.ndarray):
-    return default_h_layout(n), [[fanout] for fanout in t_cz.T[:-1]]
+def directed_cx_to_t_h_and_gcz_seq_sans_algo(n: int, b: np.ndarray):
+    # Trivial conversion of GCX(B) into (T_H, [GCZ(A), ...]) for before/after comparison of algorithms
+    t_cz = _b_to_t_cz(n, b)
+    return default_h_layout(n), [_fanouts_to_gcz(n, [fanout]) for fanout in t_cz.T[:-1]]
 
 
 def _append_gcz(n: int, qc: QuantumCircuit, a: np.ndarray):
@@ -140,7 +184,7 @@ def _append_gcz(n: int, qc: QuantumCircuit, a: np.ndarray):
 
 
 def to_qiskit(n: int, t_h, sequence):
-    assert t_h.shape[1] == len(sequence) + 1  # TODO: Can this fail? When?
+    assert t_h.shape[1] == len(sequence) + 1
     qc = QuantumCircuit(n)
     for h_lay, gcz in zip(t_h.T, sequence):
         for i in np.flatnonzero(h_lay):
@@ -160,25 +204,12 @@ def to_qiskit(n: int, t_h, sequence):
 # =====================
 
 if __name__ == '__main__':
-    n = 5
-
-    t_cz = create_random_directed_cx(n)
-    # print("Random directed CX layer layout:")
-    # print(t_cz)
-    # print(to_qiskit_prealg(n, t_cz))
-    print(to_qiskit(n, *trivial_conversion(n, t_cz)))
-
-    t_h = algorithm_1(n, t_cz)
-    # print("Corresponding modified H pattern (post-Alg1):")
-    # print(t_h)
-    # print()
-
-    red_t_h, seq = algorithm_2(n, t_h, t_cz)
-    # print("Reduced H pattern after GCZ formation (post-Alg2):")
-    # print(red_t_h)
-    # print("Diagonal gate sequence:")
-    # for i, lay in enumerate(seq):
-    #     print(f"-> layer {i}:")
-    #     print(lay)
-
-    print(to_qiskit(n, red_t_h, seq))
+    for n in range(5, 9):
+        print(f"=== EXAMPLE ON {n} QUBITS ===")
+        b = create_random_directed_cx(n)
+        print("Directed CX matrix:")
+        print(b)
+        print("Initial CZ circuit:")
+        print(to_qiskit(n, *directed_cx_to_t_h_and_gcz_seq_sans_algo(n, b)))
+        print("CZ circuit after algorithms 1&2:")
+        print(to_qiskit(n, *directed_cx_to_t_h_and_gcz_seq(n, b)))
