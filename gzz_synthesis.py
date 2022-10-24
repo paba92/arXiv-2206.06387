@@ -155,7 +155,7 @@ def create_random_binary_m(n: int) -> np.ndarray:
 # =====================
 
 if __name__ == '__main__':
-    for n in range(5, 9):
+    for n in [4, 5, 6]:
         print(f"=== EXAMPLE ON {n} QUBITS ===")
         m = create_random_binary_m(n)
         print("Symmetric matrix with zero diagonal:")

@@ -249,7 +249,7 @@ def to_qiskit(n: int, t_h, sequence):
 # =====================
 
 if __name__ == '__main__':
-    for n in range(5, 9):
+    for n in [4, 5, 6]:
         print(f"=== EXAMPLE ON {n} QUBITS ===")
         b = create_random_directed_cx(n)
         print("Directed CX matrix:")

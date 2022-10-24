@@ -360,6 +360,6 @@ def coupling_matrix(n: Union[int, GlobalPotential1D],
 
 if __name__ == '__main__':
     external = Quadratic1D()
-    for n in range(5, 9):
+    for n in [4, 5, 6]:
         print(f'=====\nJ({n}) =')
         print(coupling_matrix(n, external))
