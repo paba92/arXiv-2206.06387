@@ -2,18 +2,19 @@
 Module used to compute the coupling matrix of a MAGIC-based ion trap QIP for a given axial trap potential.
 """
 
+from typing import Union
+
 import warnings
 import itertools
-from typing import Union
 
 import numpy as np
 from numpy import linalg
 from scipy.optimize import root
 
-import matplotlib.pyplot as plt
 
-
+# =======================================
 # === ABSTRACT CLASSES FOR POTENTIALS ===
+# =======================================
 
 class GlobalPotential1D:
     """A potential acting on `n` particles that live in one-dimensional space."""
@@ -105,7 +106,9 @@ class GlobalFromLocal(GlobalPotential1D):
                            np.float_, self._n**k).reshape(k*(self._n,))
 
 
+# ===========================
 # === CONCRETE POTENTIALS ===
+# ===========================
 
 class PairwiseCoulomb1D(GlobalPotential1D):
     """
@@ -242,7 +245,9 @@ class Quadratic1D(LocalPotential1D):
             return 0
 
 
+# ============================================
 # === FUNCTIONS TOWARDS THE MAGIC COUPLING ===
+# ============================================
 
 def get_equilibrium_positions(n: Union[int, GlobalPotential1D],
                               external: Union[LocalPotential1D, GlobalPotential1D],
@@ -263,26 +268,27 @@ def get_equilibrium_positions(n: Union[int, GlobalPotential1D],
 
     If no optimum is found after `tries` tries, a RuntimeError is raised.
     """
-
+    # Let the first two arguments default to PairwiseCoulomb1D and GlobalFromLocal.
     if isinstance(n, GlobalPotential1D):
         internal = n
         n = internal.n
     else:
         internal = PairwiseCoulomb1D(n)
-
     if isinstance(external, LocalPotential1D):
         external = GlobalFromLocal(n, external)
 
+    # Add up external and internal potential for the derivatives needed
     def total_gradient(z):
         return external.gradient(z) + internal.gradient(z)
 
     def total_hessian(z):
         return external.hessian(z) + internal.hessian(z)
 
-    # TODO: use non-linear spacing
+    # Compute the default initialization for the optimizer, if needed
     if init is None:
+        # This is a heuristic that works well for external quadratic potential and up to ~20 ions.
         outer = 2.16789415 * pow(n, 0.36617105) - 2.16584614  # approximate position of the ion with the greatest z
-        init = np.linspace(-outer, outer, n)
+        init = np.linspace(-outer, outer, n)  # TODO: use non-linear spacing
 
     for i in range(tries):
         res = root(total_gradient, init, jac=total_hessian)
@@ -290,48 +296,70 @@ def get_equilibrium_positions(n: Union[int, GlobalPotential1D],
             return res.x
         else:
             warnings.warn(f"Failed to find equilibrium positions on try {i+1}: {res.message}")
-            # TODO: rework (maybe)
-            init += 0.2 * (np.random.random_sample(n) - 0.5)
-            init.sort()
+            init += 0.2 * (np.random.random_sample(n) - 0.5)  # TODO: change to relative variations
+            init.sort()  # ensure ions are in order
     raise RuntimeError(f"Giving up to find equilibrium position after {tries} tries.")
 
 
-def normal_mode_matrix(n, external, init=None, tries=5):
+def normal_mode_matrix(n: Union[int, GlobalPotential1D],
+                       external: Union[LocalPotential1D, GlobalPotential1D],
+                       init=None, tries: int = 5):
+    """
+    Compute the normal mode matrix of phonons in a crystal consisting of `n` ions (by numerical optimization).
+
+    This is simply the Hessian of the total potential evaluated at the equilibrium configuration.
+    A typical use case for this function may look like this:
+      a0 = normal_mode_matrix(8, Quadratic1D())
+
+    See `get_equilibrium_positions()` for the documentation of parameters.
+    """
+
     if isinstance(n, PairwiseCoulomb1D):
-        coulomb = n
-        n = coulomb.n
+        internal = n
+        n = internal.n
     else:
-        coulomb = PairwiseCoulomb1D(n)
+        internal = PairwiseCoulomb1D(n)
     if isinstance(external, LocalPotential1D):
         external = GlobalFromLocal(n, external)
 
     def total_hessian(zs):
-        return coulomb.hessian(zs) + external.hessian(zs)
+        return internal.hessian(zs) + external.hessian(zs)
 
-    return total_hessian(get_equilibrium_positions(coulomb, external, init, tries))
-
-
-def coupling_matrix(n, external, init=None, tries=5):
-    return linalg.inv(normal_mode_matrix(n, external, init, tries))
+    return total_hessian(get_equilibrium_positions(internal, external, init, tries))
 
 
-# === UTIL ===
-
-def plot_matrix(mat, no_diag=False):
-    if no_diag:
-        mat = mat.copy()
-        for i in range(len(mat)):
-            mat[i, i] = 0
-    plt.imshow(mat)
-    plt.colorbar()
-    plt.show()
+def _delete_diag(j: np.ndarray):
+    j[np.diag_indices_from(j)] = 0
 
 
-# === EXAMPLE CODE ===
+def coupling_matrix(n: Union[int, GlobalPotential1D],
+                    external: Union[LocalPotential1D, GlobalPotential1D],
+                    delete_diagonal: bool = True,
+                    init=None, tries: int = 5):
+    """
+    Compute the MAGIC coupling matrix of an `n` ion crystal (by numerical optimization).
+
+    Up to a hardware-specific factor that is not included in this function, this is just the inverse
+    of the normal mode matrix.
+    A typical use case for this function may look like this:
+      j = coupling_matrix(8, Quadratic1D())
+
+    delete_diagonal - Optional, default: True. Whether to set the diagonal of the result to zero, as it is conventional
+                                               for Ising couplings.
+    See `get_equilibrium_positions()` for the documentation of the other parameters.
+    """
+    j = linalg.inv(normal_mode_matrix(n, external, init, tries))
+    if delete_diagonal:
+        _delete_diag(j)
+    return j
+
+
+# =====================
+# === USAGE EXAMPLE ===
+# =====================
 
 if __name__ == '__main__':
-    n_max = 20
     external = Quadratic1D()
-    for n in range(2, n_max+1):
+    for n in range(5, 9):
         print(f'=====\nJ({n}) =')
         print(coupling_matrix(n, external))
